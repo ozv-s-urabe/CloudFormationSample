@@ -1,0 +1,168 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for auto stop and start EC2/RDS/Autoscaling-Group instances
+#
+# Metadata
+#
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: CloudWatch Events Configuration
+      Parameters:
+      - StartSchedule
+      - StopSchedule
+    - Label:
+        default: Lambda Configuration
+      Parameters:
+      - TagKey
+      - TagValue
+      # for autoscaling
+      - AutoScalingSleepDesiredCapacity
+      - AutoScalingSleepMaxSize
+      - AutoScalingSleepMinSize
+      - AutoScalingWakeDesiredCapacity
+      - AutoScalingWakeMaxSize
+      - AutoScalingWakeMinSize
+
+#
+# Parameters
+#
+Parameters:
+  StartSchedule:
+    Description: Start Datetime format cron
+    Default: 0 0 ? * MON-FRI *
+    Type: String
+  StopSchedule:
+    Description: Stop Datetime format cron
+    Default: 0 12 ? * * *
+    Type: String
+  TagKey:
+    Description: EC2/RDS/Autoscaling-Group tag key
+    Default: state-scheduler
+    Type: String
+  TagValue:
+    Description: EC2/RDS/Autoscaling-Group tag value
+    Default: "True"
+    Type: String
+  AutoScalingSleepDesiredCapacity:
+    Description: for autoscaling sleep desired capacity
+    Default: 0
+    Type: String
+  AutoScalingSleepMaxSize:
+    Description: for autoscaling sleep max size
+    Default: 0
+    Type: String
+  AutoScalingSleepMinSize:
+    Description: for autoscaling sleep min size
+    Default: 0
+    Type: String
+  AutoScalingWakeDesiredCapacity:
+    Description: for autoscaling wake desired capacity
+    Default: 1
+    Type: String
+  AutoScalingWakeMaxSize:
+    Description: for autoscaling wake max size
+    Default: 4
+    Type: String
+  AutoScalingWakeMinSize:
+    Description: for autoscaling wake min size
+    Default: 1
+    Type: String
+
+#
+# Resources
+#
+Resources:
+  StateSchedulerExecRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: LambdaExecPolicy
+        PolicyDocument:
+          Statement:
+          - Sid: AccessToCWLog
+            Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: "*"
+          - Sid: AccessToInstance
+            Effect: Allow
+            Action:
+            - ec2:DescribeInstances
+            - ec2:StartInstances
+            - ec2:StopInstances
+            - rds:DescribeDBInstances
+            - rds:StartDBInstance
+            - rds:StopDBInstance
+            - rds:ListTagsForResource
+            Resource: "*"
+          - Sid: AccessToAutoScalingGroup
+            Effect: Allow
+            Action:
+            - autoscaling:UpdateAutoScalingGroup
+            - autoscaling:Describe*
+            Resource: "*"
+  StartScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: ScheduledRule for start instance
+      ScheduleExpression: !Sub cron(${StartSchedule})
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt [ StateSchedulerFunction, Arn ]
+        Id: StateSchedulerFunction
+  StopScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: ScheduledRule for stop instance
+      ScheduleExpression: !Sub cron(${StopSchedule})
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt [ StateSchedulerFunction, Arn ]
+        Id: StateSchedulerFunction
+  PermissionForStartEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref StateSchedulerFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt [ StartScheduledRule, Arn ]
+  PermissionForStopEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref StateSchedulerFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt [ StopScheduledRule, Arn ]
+  StateSchedulerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Environment:
+        Variables:
+          TagKey: !Ref TagKey
+          TagValue: !Ref TagValue
+          AutoScalingSleepDesiredCapacity: !Ref AutoScalingSleepDesiredCapacity
+          AutoScalingSleepMaxSize: !Ref AutoScalingSleepMaxSize
+          AutoScalingSleepMinSize: !Ref AutoScalingSleepMinSize
+          AutoScalingWakeDesiredCapacity: !Ref AutoScalingWakeDesiredCapacity
+          AutoScalingWakeMaxSize: !Ref AutoScalingWakeMaxSize
+          AutoScalingWakeMinSize: !Ref AutoScalingWakeMinSize
+      Description: Scheduled EC2/RDS/Autoscaling-Group stop and start.
+      Handler: index.lambda_handler
+      MemorySize: 512
+      Role: !GetAtt [ StateSchedulerExecRole, Arn ]
+      Runtime: python3.7
+      Timeout: 120
+      Code: src/lambda
